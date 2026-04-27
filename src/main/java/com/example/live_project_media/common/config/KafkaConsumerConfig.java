@@ -1,6 +1,7 @@
 package com.example.live_project_media.common.config;
 
-import com.example.live_project_media.dto.videoEncodeEvent;
+import com.example.live_project_media.dto.VideoValidationEvent;
+import org.apache.kafka.common.serialization.StringDeserializer;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.context.annotation.Bean;
@@ -10,6 +11,10 @@ import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.support.serializer.JacksonJsonDeserializer;
+
+import java.util.HashMap;
+import java.util.Map;
 
 @Configuration
 @EnableKafka
@@ -19,19 +24,33 @@ public class KafkaConsumerConfig {
     private Integer CONSUMER_PARTITIONS;
 
     @Bean
-    public ConsumerFactory<String, videoEncodeEvent> consumerFactory(
+    public ConsumerFactory<String, VideoValidationEvent> consumerFactory(
             KafkaProperties properties){
+        Map<String, Object> props = new HashMap<>(properties.buildConsumerProperties());
+        props.remove("spring.json.trusted.packages");
+        props.remove("spring.json.use.type.headers");
+        props.remove("spring.json.value.default.type");
+        props.remove("spring.json.key.default.type");
+
+        JacksonJsonDeserializer<VideoValidationEvent> valueDeserializer =
+                new JacksonJsonDeserializer<>(VideoValidationEvent.class);
+
+        valueDeserializer.setUseTypeHeaders(false);
+        valueDeserializer.addTrustedPackages("*");
+
         return new DefaultKafkaConsumerFactory<>(
-                properties.buildConsumerProperties()
+                props,
+                new StringDeserializer(),
+                valueDeserializer
         );
     }
 
     @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, videoEncodeEvent>
-    kafkaListenerContainerFactory(
-            ConsumerFactory<String, videoEncodeEvent> consumerFactory
+    public ConcurrentKafkaListenerContainerFactory<String, VideoValidationEvent>
+    videoValidateCompleteKafkaListenerContainerFactory(
+            ConsumerFactory<String, VideoValidationEvent> consumerFactory
     ){
-        ConcurrentKafkaListenerContainerFactory<String, videoEncodeEvent> factory =
+        ConcurrentKafkaListenerContainerFactory<String, VideoValidationEvent> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
 
         factory.setConsumerFactory(consumerFactory);
