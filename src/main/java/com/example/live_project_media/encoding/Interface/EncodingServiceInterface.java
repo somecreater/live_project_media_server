@@ -1,6 +1,7 @@
 package com.example.live_project_media.encoding.Interface;
 
 import com.example.live_project_media.dto.ParsedObjectKey;
+import com.example.live_project_media.dto.VideoEncodingEvent;
 import com.example.live_project_media.dto.VideoValidationEvent;
 import org.springframework.kafka.support.Acknowledgment;
 
@@ -40,4 +41,6 @@ public interface EncodingServiceInterface {
   public void deleteDirectoryQuietly(Path directory);
   /**미디어 처리를 위한 명령어 실행*/
   public int runProcess(List<String> command) throws IOException, InterruptedException;
+  /**Kafka로 동영상 인코딩 완료 메시지 전송*/
+  public void publishVideoEncodingCompleted(VideoEncodingEvent videoEncodingEvent);
 }

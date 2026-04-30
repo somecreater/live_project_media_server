@@ -1,12 +1,16 @@
 package com.example.live_project_media.encoding;
 
 import com.example.live_project_media.dto.ParsedObjectKey;
+import com.example.live_project_media.dto.VideoEncodingEvent;
 import com.example.live_project_media.dto.VideoValidationEvent;
 import com.example.live_project_media.encoding.Interface.EncodingServiceInterface;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.event.EventListener;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Service;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -33,6 +37,11 @@ public class EncodingService implements EncodingServiceInterface {
 
   private final S3Client s3Client;
   private final S3Presigner s3Presigner;
+
+  @Value("${app.kafka.topic.video-encoding.name}")
+  private String VIDEO_ENCODING_TOPIC_NAME;
+  private final ApplicationEventPublisher publisher;
+  private final KafkaTemplate<String, VideoEncodingEvent> kafkaTemplate;
 
   @Value("${app.r2.video-bucket-name}")
   private String bucket_name;
@@ -116,6 +125,7 @@ public class EncodingService implements EncodingServiceInterface {
 
           deleteOriginalVideo(objectKey);
 
+          publisher.publishEvent(new VideoEncodingEvent(videoId, channelName, objectKey, outputPrefix));
           log.info("Video encoding completed. videoId={}, hlsPath={}",
                   videoId,
                   outputPrefix + "master.m3u8");
@@ -428,5 +438,19 @@ public class EncodingService implements EncodingServiceInterface {
       }
 
       return process.waitFor();
+  }
+
+  @EventListener
+  @Override
+  public void publishVideoEncodingCompleted(VideoEncodingEvent videoEncodingEvent){
+      kafkaTemplate.send(
+        VIDEO_ENCODING_TOPIC_NAME,
+        videoEncodingEvent.getObjectKey(),
+        videoEncodingEvent
+      );
+
+      log.info("Kafka Video Validation Message Produced to Kafka - Object KEY: {}, Video ID: {}",
+              videoEncodingEvent.getObjectKey(),
+              videoEncodingEvent.getVideoId());
   }
 }
