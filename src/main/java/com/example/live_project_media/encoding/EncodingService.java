@@ -18,6 +18,7 @@ import software.amazon.awssdk.core.sync.ResponseTransformer;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.*;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+import java.util.UUID;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -52,7 +53,10 @@ public class EncodingService implements EncodingServiceInterface {
   @Value("${app.file.video_limit_size}")
   private Long video_limit_size;
 
-  /**aws ebs 미 구성에 따른 임시 파일 경로*/
+  /**
+   * 지금은 로컬 경로이나 추후 CloudFlare R2 버킷 경로(Input 파일 용),
+   * AWS EBS 경로(Output 파일 용)으로 변경
+   * */
   private final String TMP_FILE_DIRECTORY="C:\\live_project\\temp";
 
   private static final long MB = 1024L * 1024L;
@@ -70,17 +74,29 @@ public class EncodingService implements EncodingServiceInterface {
             encodeEvent.getVideo_id(),
             encodeEvent.getObject_key());
 
+          Long videoId = encodeEvent.getVideo_id();
+          String objectKey = encodeEvent.getObject_key();
+
           ParsedObjectKey parsedObjectKey = parsedObjectKey(encodeEvent.getObject_key());
+          if (!parsedObjectKey.getVideoId().equals(videoId)) {
+              throw new IllegalArgumentException(
+                      "Video ID mismatch. eventId="
+                              + videoId
+                              + ", objectKey="
+                              + objectKey
+              );
+          }
 
           encodeVideo(
-                  parsedObjectKey.getVideoId(),
+                  videoId,
                   parsedObjectKey.getChannelName(),
-                  encodeEvent.getObject_key()
+                  objectKey
           );
 
           ack.acknowledge();
       } catch (Exception e) {
           log.error("Video consume failed", e);
+          throw e;
       }
   }
 
@@ -91,12 +107,19 @@ public class EncodingService implements EncodingServiceInterface {
       try {
           ParsedObjectKey parsedObjectKey = parsedObjectKey(objectKey);
 
+          if (!parsedObjectKey.getVideoId().equals(videoId)
+                  || !parsedObjectKey.getChannelName().equals(channelName)) {
+              throw new IllegalArgumentException(
+                      "Encoding parameters do not match Object Key"
+              );
+          }
+
           Path tempRoot = Paths.get(TMP_FILE_DIRECTORY);
           Files.createDirectories(tempRoot);
 
           workDir = Files.createTempDirectory(
                   tempRoot,
-                  "encoding-" + channelName + "-" + videoId + "-"
+                  "encoding-" + videoId + "-"
           );
 
           Path inputFile = workDir.resolve("input" + detectExtension(objectKey));
@@ -122,8 +145,6 @@ public class EncodingService implements EncodingServiceInterface {
           );
 
           uploadHlsDirectoryToR2(outputDir, outputPrefix);
-
-          deleteOriginalVideo(objectKey);
 
           publisher.publishEvent(new VideoEncodingEvent(videoId, channelName, objectKey, outputPrefix));
           log.info("Video encoding completed. videoId={}, hlsPath={}",
@@ -158,26 +179,75 @@ public class EncodingService implements EncodingServiceInterface {
       if (objectKey == null || objectKey.isBlank()) {
           throw new IllegalArgumentException("objectKey is blank");
       }
-      String[] parts = objectKey.split("/", 3);
+      String prefix = original_video_folder;
 
-      if (parts.length != 3) {
-          throw new IllegalArgumentException("Invalid objectKey format: " + objectKey);
+      if (prefix.startsWith("/")) {
+          prefix = prefix.substring(1);
       }
 
-      String prefix = parts[0];
-      String channelName = parts[1];
-      String filePart = parts[2];
-
-      int underscoreIndex = filePart.indexOf("_");
-
-      if (underscoreIndex <= 0) {
-          throw new IllegalArgumentException("Cannot parse videoId and title from objectKey: " + objectKey);
+      if (!prefix.endsWith("/")) {
+          prefix += "/";
       }
 
-      Long videoId = Long.parseLong(filePart.substring(0, underscoreIndex));
-      String title = filePart.substring(underscoreIndex + 1);
+      String expectedPrefix = prefix + "channels/";
 
-      return new ParsedObjectKey(prefix + "/", channelName, videoId, title);
+      if (!objectKey.startsWith(expectedPrefix)) {
+          throw new IllegalArgumentException(
+                  "Invalid Object Key prefix: " + objectKey
+          );
+      }
+
+      String relativePath =
+              objectKey.substring(expectedPrefix.length());
+
+      String[] parts = relativePath.split("/", -1);
+
+      if (parts.length != 4 || !parts[1].equals("videos")) {
+          throw new IllegalArgumentException(
+                  "Invalid Object Key format: " + objectKey
+          );
+      }
+
+      String channelName = parts[0];
+      String fileName = parts[3];
+
+      if (channelName.isBlank() || fileName.isBlank()) {
+          throw new IllegalArgumentException(
+                  "Invalid channel or file name: " + objectKey
+          );
+      }
+
+      Long videoId;
+      try {
+          videoId = Long.parseLong(parts[2]);
+      } catch (NumberFormatException exception) {
+          throw new IllegalArgumentException(
+                  "Invalid videoId: " + objectKey,
+                  exception
+          );
+      }
+
+      if (videoId <= 0) {
+          throw new IllegalArgumentException(
+                  "Invalid videoId: " + videoId
+          );
+      }
+
+      if (!fileName.matches(
+              "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+                      + "[0-9a-f]{4}-[0-9a-f]{12}\\.(mp4|mov)"
+      )) {
+          throw new IllegalArgumentException(
+                  "Invalid video file name: " + objectKey
+          );
+      }
+
+      return new ParsedObjectKey(
+              prefix,
+              channelName,
+              videoId,
+              fileName
+      );
   }
 
   @Override
@@ -341,11 +411,24 @@ public class EncodingService implements EncodingServiceInterface {
   public String buildTranscodedPrefix(String channelName, Long videoId){
       String normalizedFolder = transcoding_video_folder;
 
+      if (normalizedFolder.startsWith("/")) {
+          normalizedFolder = normalizedFolder.substring(1);
+      }
+
       if (!normalizedFolder.endsWith("/")) {
           normalizedFolder += "/";
       }
 
-      return normalizedFolder + channelName + "/" + videoId + "/";
+      String jobId = UUID.randomUUID().toString();
+
+      return normalizedFolder
+              + "channels/"
+              + channelName
+              + "/videos/"
+              + videoId
+              + "/"
+              + jobId
+              + "/";
   }
 
   @Override

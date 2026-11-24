@@ -9,5 +9,5 @@ public class ParsedObjectKey {
     String prefix;
     String channelName;
     Long videoId;
-    String title;
+    String fileName;
 }
